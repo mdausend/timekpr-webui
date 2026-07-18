@@ -30,14 +30,13 @@ pub fn reconcile(policies: &[FirewallPolicy]) -> Result<(), String> {
         append_nat_redirect(policy, "tcp")?;
         append_dns_tls_block(policy, "udp")?;
         append_dns_tls_block(policy, "tcp")?;
-    }
-
-    let managed_ports: Vec<u16> = policies.iter().map(|policy| policy.listen_port).collect();
-    for policy in policies {
-        for port in &managed_ports {
-            append_port_guard(policy.uid, *port, "udp")?;
-            append_port_guard(policy.uid, *port, "tcp")?;
-        }
+        // Guard only this UID's listen port. A cartesian product over all
+        // managed ports creates contradictory REJECT rules that break
+        // redirected DNS for every UID whenever 2+ users have domain policy
+        // (common failure mode for Wine/Proton games that use classic port-53
+        // DNS instead of DoH / nss-resolve).
+        append_port_guard(policy.uid, policy.listen_port, "udp")?;
+        append_port_guard(policy.uid, policy.listen_port, "tcp")?;
     }
 
     Ok(())
@@ -207,16 +206,12 @@ mod tests {
             ));
             rules.push(format!("block uid={} udp 853", policy.uid));
             rules.push(format!("block uid={} tcp 853", policy.uid));
-        }
-        for policy in policies {
-            for other in policies {
-                rules.push(format!(
-                    "guard uid={} {} -> {}",
-                    policy.uid,
-                    other.listen_port,
-                    other.listen_port
-                ));
-            }
+            rules.push(format!(
+                "guard uid={} {} -> {}",
+                policy.uid,
+                policy.listen_port,
+                policy.listen_port
+            ));
         }
         rules
     }
@@ -231,13 +226,39 @@ mod tests {
         let rules = render_rules(&policies);
         assert!(rules.iter().any(|rule| rule.contains("redirect uid=1000 udp 53 -> 23001")));
         assert!(rules.iter().any(|rule| rule.contains("block uid=1001 tcp 853")));
-        assert!(rules.iter().any(|rule| rule.contains("guard uid=1000 23002 -> 23002")));
+        assert!(rules.iter().any(|rule| rule.contains("guard uid=1000 23001 -> 23001")));
+        assert!(rules.iter().any(|rule| rule.contains("guard uid=1001 23002 -> 23002")));
+        // Cross-UID guards must not exist: they REJECT each user's own
+        // redirected DNS when multiple UIDs are managed.
+        assert!(!rules.iter().any(|rule| rule.contains("guard uid=1000 23002 -> 23002")));
+        assert!(!rules.iter().any(|rule| rule.contains("guard uid=1001 23001 -> 23001")));
+    }
+
+    #[test]
+    fn multi_uid_port_guards_do_not_conflict() {
+        let policies = vec![
+            FirewallPolicy { uid: 1001, listen_port: 23010 },
+            FirewallPolicy { uid: 1002, listen_port: 23011 },
+        ];
+        let rules = render_rules(&policies);
+        let guards: Vec<_> = rules
+            .iter()
+            .filter(|rule| rule.starts_with("guard "))
+            .cloned()
+            .collect();
+        assert_eq!(
+            guards,
+            vec![
+                "guard uid=1001 23010 -> 23010".to_string(),
+                "guard uid=1002 23011 -> 23011".to_string(),
+            ]
+        );
     }
 
     #[test]
     #[cfg(target_os = "linux")]
     fn port_guard_negates_uid_owner_match_in_supported_position() {
-        let args = build_port_guard_args(1000, 23002, "udp");
+        let args = build_port_guard_args(1000, 23001, "udp");
         assert_eq!(
             args,
             vec![
@@ -253,7 +274,7 @@ mod tests {
                 "-p",
                 "udp",
                 "--dport",
-                "23002",
+                "23001",
                 "-j",
                 "REJECT",
             ]
