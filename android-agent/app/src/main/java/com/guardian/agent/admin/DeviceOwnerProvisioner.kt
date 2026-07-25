@@ -68,6 +68,11 @@ object DeviceOwnerProvisioner {
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to set lock task packages", e)
             }
+            try {
+                dpm.setAccountManagementDisabled(admin, "com.google", false)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to enable Google account management for DO", e)
+            }
         }
 
         return true
