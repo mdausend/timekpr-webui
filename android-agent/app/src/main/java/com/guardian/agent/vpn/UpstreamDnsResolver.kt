@@ -17,10 +17,19 @@ internal class UpstreamDnsResolver(
     private val vpnService: VpnService,
     upstreamNetwork: Network?,
 ) {
-    private val connectivityManager =
-        context.getSystemService(ConnectivityManager::class.java)
+    private val connectivityManager: ConnectivityManager? by lazy {
+        try {
+            context.getSystemService(ConnectivityManager::class.java)
+        } catch (_: Exception) {
+            null
+        }
+    }
 
-    val network: Network? = upstreamNetwork ?: VpnNetworkCapture.findUnderlyingNetwork(context)
+    val network: Network? = upstreamNetwork ?: try {
+        VpnNetworkCapture.findUnderlyingNetwork(context)
+    } catch (_: Exception) {
+        null
+    }
     val servers: List<InetAddress> = resolveUpstreamServers(network)
 
     fun resolve(parsed: DnsPacketHandler.ParsedDnsQuery): ByteArray? {
@@ -29,6 +38,25 @@ internal class UpstreamDnsResolver(
 
     fun resolveRaw(dnsPayload: ByteArray, queryName: String): ByteArray? {
         return forward(dnsPayload)
+    }
+
+    fun forward(query: ByteArray): ByteArray? {
+        for (server in servers) {
+            try {
+                DatagramSocket().use { socket ->
+                    bindSocket(socket)
+                    socket.soTimeout = TIMEOUT_MS
+                    socket.send(DatagramPacket(query, query.size, server, 53))
+                    val buffer = ByteArray(4096)
+                    val response = DatagramPacket(buffer, buffer.size)
+                    socket.receive(response)
+                    return buffer.copyOf(response.length)
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Raw upstream DNS query failed via ${server.hostAddress}", e)
+            }
+        }
+        return null
     }
 
     private fun bindSocket(socket: DatagramSocket) {
