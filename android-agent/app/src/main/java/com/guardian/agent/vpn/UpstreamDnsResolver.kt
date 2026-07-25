@@ -28,73 +28,20 @@ internal class UpstreamDnsResolver(
     }
 
     fun resolveRaw(dnsPayload: ByteArray, queryName: String): ByteArray? {
-        val query = DnsPacketHandler.minimalQuery(dnsPayload, queryName)
-        if (query.queryType == DnsAnswerBuilder.QTYPE_A || query.queryType == DnsAnswerBuilder.QTYPE_AAAA) {
-            resolveViaNetwork(query)?.let { return it }
-        }
         return forward(dnsPayload)
     }
 
-    private fun resolveViaNetwork(parsed: DnsPacketHandler.ParsedDnsQuery): ByteArray? {
-        val upstream = network ?: return null
-        return withBoundNetwork(upstream) {
-            try {
-                val addresses = upstream.getAllByName(parsed.queryName)
-                if (addresses.isEmpty()) {
-                    null
-                } else {
-                    DnsAnswerBuilder.buildAnswer(parsed, addresses)
-                }
-            } catch (_: UnknownHostException) {
-                DnsAnswerBuilder.buildNxDomain(parsed)
-            } catch (e: Exception) {
-                Log.w(TAG, "Network lookup failed for ${parsed.queryName}", e)
-                null
-            }
-        }
-    }
-
-    private fun <T> withBoundNetwork(network: Network, block: () -> T): T {
-        val manager = connectivityManager
-        if (manager == null) {
-            return block()
-        }
-        val previous = manager.boundNetworkForProcess
-        return try {
-            manager.bindProcessToNetwork(network)
-            block()
-        } finally {
-            manager.bindProcessToNetwork(previous)
-        }
-    }
-
-    fun forward(query: ByteArray): ByteArray? {
-        for (server in servers) {
-            try {
-                DatagramSocket().use { socket ->
-                    bindSocket(socket)
-                    socket.soTimeout = TIMEOUT_MS
-                    socket.send(DatagramPacket(query, query.size, server, 53))
-                    val buffer = ByteArray(4096)
-                    val response = DatagramPacket(buffer, buffer.size)
-                    socket.receive(response)
-                    return buffer.copyOf(response.length)
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "Raw upstream DNS query failed via ${server.hostAddress}", e)
-            }
-        }
-        return null
-    }
-
     private fun bindSocket(socket: DatagramSocket) {
+        if (!vpnService.protect(socket)) {
+            Log.w(TAG, "Failed to protect upstream DNS socket")
+        }
         val upstream = network
         if (upstream != null) {
-            upstream.bindSocket(socket)
-            return
-        }
-        if (!vpnService.protect(socket)) {
-            throw IllegalStateException("Failed to protect upstream DNS socket")
+            try {
+                upstream.bindSocket(socket)
+            } catch (e: Exception) {
+                Log.d(TAG, "Failed to bind socket to upstream network: ${e.message}")
+            }
         }
     }
 
