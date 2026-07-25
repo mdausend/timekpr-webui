@@ -653,8 +653,21 @@ class EnforcementController(
             AgentLog.d(TAG, "Cannot suspend/unsuspend packages: not device/profile owner")
             return
         }
+        val targetPackages = if (suspended) {
+            val criticalPackages = setOf(
+                "com.google.android.gms",
+                "com.google.android.gsf",
+                "com.google.android.apps.kids.familylinkhelper",
+                "com.google.android.apps.kids.familylink",
+                context.packageName,
+            )
+            packages.filter { it !in criticalPackages }.toTypedArray()
+        } else {
+            packages
+        }
+        if (targetPackages.isEmpty()) return
         try {
-            dpm.setPackagesSuspended(adminComponent, packages, suspended)
+            dpm.setPackagesSuspended(adminComponent, targetPackages, suspended)
         } catch (e: SecurityException) {
             AgentLog.d(TAG, "Failed to set packages suspended (suspended=$suspended): ${e.message}")
         }

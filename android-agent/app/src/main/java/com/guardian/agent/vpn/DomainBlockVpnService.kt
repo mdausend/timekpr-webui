@@ -142,6 +142,20 @@ class DomainBlockVpnService : VpnService() {
             builder.setMetered(false)
         }
 
+        val systemPackagesToBypass = listOf(
+            "com.google.android.gms",
+            "com.google.android.gsf",
+            "com.google.android.apps.kids.familylinkhelper",
+            "com.google.android.apps.kids.familylink",
+        )
+        for (pkg in systemPackagesToBypass) {
+            try {
+                builder.addDisallowedApplication(pkg)
+            } catch (e: Exception) {
+                Log.d(TAG, "Package $pkg not found for VPN bypass: ${e.message}")
+            }
+        }
+
         for (dnsServer in dnsServers) {
             val host = dnsServer.hostAddress ?: continue
             builder.addDnsServer(host)

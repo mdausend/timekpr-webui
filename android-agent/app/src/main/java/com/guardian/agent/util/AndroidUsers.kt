@@ -263,6 +263,19 @@ object AndroidUsers {
     fun activeUserUid(context: Context): Int {
         val callingUserId = Process.myUid() / 100_000
         if (callingUserId == 0) {
+            val hasCrossUserPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                "android.permission.INTERACT_ACROSS_USERS",
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                "android.permission.INTERACT_ACROSS_USERS_FULL",
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+            if (!hasCrossUserPermission) {
+                return callingUserId
+            }
+
             return try {
                 val activityManager = context.getSystemService(android.app.ActivityManager::class.java)
                 val getCurrentUserMethod = android.app.ActivityManager::class.java.getMethod("getCurrentUser")
