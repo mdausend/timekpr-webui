@@ -1,22 +1,49 @@
 """Helpers for OpenID Connect discovery and login flows."""
 
+import hashlib
 import json
 import logging
 import os
 import secrets
+import threading
 import time
+from dataclasses import dataclass
 
 import requests
 
 logger = logging.getLogger(__name__)
 
+_EXPECTED_AUTH_FAILURE_ERRORS = frozenset({
+    'invalid_grant',
+    'invalid_token',
+    'access_denied',
+})
+_REFRESH_CACHE_TTL_SECONDS = 60.0
+_refresh_cache: dict[str, tuple[dict, float]] = {}
+_refresh_locks: dict[str, threading.Lock] = {}
+_refresh_locks_guard = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _OAuthError:
+    error: str | None
+    description: str | None
+
 
 class OIDCRefreshError(RuntimeError):
     """Custom exception raised when OIDC token refresh fails."""
-    def __init__(self, message, is_transient=False, status_code=None):
+    def __init__(self, message, is_transient=False, status_code=None, oauth_error=None):
         super().__init__(message)
         self.is_transient = is_transient
         self.status_code = status_code
+        self.oauth_error = oauth_error
+
+    @property
+    def is_expected_auth_failure(self) -> bool:
+        """Return True when the provider rejected an expired or revoked refresh token."""
+        if self.oauth_error in _EXPECTED_AUTH_FAILURE_ERRORS:
+            return True
+        return self.status_code in (401, 403)
 
 
 class OIDCHelper:
@@ -65,6 +92,68 @@ class OIDCHelper:
             return max(1, int(raw))
         except ValueError:
             return 3
+
+    @staticmethod
+    def _refresh_token_cache_key(refresh_token: str) -> str:
+        return hashlib.sha256(refresh_token.encode('utf-8')).hexdigest()
+
+    @staticmethod
+    def _get_refresh_lock(cache_key: str) -> threading.Lock:
+        with _refresh_locks_guard:
+            lock = _refresh_locks.get(cache_key)
+            if lock is None:
+                lock = threading.Lock()
+                _refresh_locks[cache_key] = lock
+            return lock
+
+    @staticmethod
+    def _read_cached_refresh(cache_key: str) -> dict | None:
+        cached = _refresh_cache.get(cache_key)
+        if cached is None:
+            return None
+        tokens, created_at = cached
+        if time.time() - created_at > _REFRESH_CACHE_TTL_SECONDS:
+            _refresh_cache.pop(cache_key, None)
+            return None
+        return dict(tokens)
+
+    @staticmethod
+    def _store_cached_refresh(refresh_token: str, tokens: dict) -> None:
+        cache_key = OIDCHelper._refresh_token_cache_key(refresh_token)
+        _refresh_cache[cache_key] = (dict(tokens), time.time())
+        rotated_refresh = tokens.get('refresh_token')
+        if rotated_refresh and rotated_refresh != refresh_token:
+            rotated_key = OIDCHelper._refresh_token_cache_key(rotated_refresh)
+            _refresh_cache[rotated_key] = (dict(tokens), time.time())
+
+    @staticmethod
+    def _parse_oauth_error(response) -> _OAuthError:
+        if response is None:
+            return _OAuthError(None, None)
+        try:
+            body = response.json()
+        except ValueError:
+            return _OAuthError(None, None)
+        if not isinstance(body, dict):
+            return _OAuthError(None, None)
+        error = body.get('error')
+        description = body.get('error_description')
+        return _OAuthError(
+            str(error).strip().lower() if error else None,
+            str(description).strip() if description else None,
+        )
+
+    @staticmethod
+    def _log_refresh_http_error(status_code, oauth_error, exc, is_transient: bool) -> None:
+        if oauth_error in _EXPECTED_AUTH_FAILURE_ERRORS or status_code in (401, 403):
+            logger.info(
+                "OIDC token refresh rejected by provider (status %s, error %s)",
+                status_code,
+                oauth_error or 'unknown',
+            )
+            return
+        log = logger.warning if is_transient else logger.error
+        log("HTTP error during OIDC token refresh (status %s): %s", status_code, exc)
 
     @property
     def is_enabled(self):
@@ -158,6 +247,19 @@ class OIDCHelper:
 
     def refresh_access_token(self, refresh_token):
         """Refreshes the access token using a refresh token."""
+        cache_key = self._refresh_token_cache_key(refresh_token)
+        lock = self._get_refresh_lock(cache_key)
+        with lock:
+            cached_tokens = self._read_cached_refresh(cache_key)
+            if cached_tokens is not None:
+                logger.info("Reusing recently refreshed OIDC tokens for concurrent request.")
+                return cached_tokens
+            tokens = self._request_refresh_tokens(refresh_token)
+            self._store_cached_refresh(refresh_token, tokens)
+            return tokens
+
+    def _request_refresh_tokens(self, refresh_token):
+        """Call the provider token endpoint for a refresh grant."""
         endpoints = self._fetch_discovery()
         token_endpoint = endpoints.get('token_endpoint')
         if not token_endpoint:
@@ -185,6 +287,7 @@ class OIDCHelper:
                 return response.json()
             except requests.HTTPError as exc:
                 status_code = exc.response.status_code if exc.response is not None else None
+                oauth_error = self._parse_oauth_error(exc.response).error
                 # Standard OAuth2 revocation/auth errors return 400 Bad Request (invalid_grant)
                 # or 401/403. Treat 5xx and others as transient.
                 is_transient = status_code is not None and status_code >= 500
@@ -197,12 +300,12 @@ class OIDCHelper:
                     )
                     time.sleep(1)
                     continue
-                log = logger.warning if is_transient else logger.error
-                log("HTTP error during OIDC token refresh (status %s): %s", status_code, exc)
+                self._log_refresh_http_error(status_code, oauth_error, exc, is_transient)
                 raise OIDCRefreshError(
                     f"OIDC token refresh failed with HTTP status {status_code}: {exc}",
                     is_transient=is_transient,
                     status_code=status_code,
+                    oauth_error=oauth_error,
                 ) from exc
             except requests.RequestException as exc:
                 if attempt < max_attempts:
