@@ -12,8 +12,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out ARM64 test branch
         uses: actions/checkout@v4
+        with:
+          ref: build/arm64-server-image
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
