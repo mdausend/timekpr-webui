@@ -31,6 +31,8 @@ strings:
   status_reconnect: Reconnect
   wizard_step1_title: Link this device to your Guardian dashboard.
   wizard_step1_hint: Point your camera at the pairing QR code from your parent dashboard.
+  wizard_manual_pairing_hint: Paste pairing payload
+  wizard_manual_pairing_submit: Pair manually
   wizard_step2_title: Activate Protection Tools
   wizard_perm_admin_title: Device Administrator
   wizard_perm_admin_desc: Prevents the protection app from being cleared or uninstalled without authorization.
