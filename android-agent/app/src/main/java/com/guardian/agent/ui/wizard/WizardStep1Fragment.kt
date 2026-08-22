@@ -55,6 +55,11 @@ class WizardStep1Fragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+
+        binding.manualPairingSubmit.setOnClickListener {
+            handleScanResult(binding.manualPairingPayload.text?.toString().orEmpty())
+        }
+
         startOverlayPulse()
         if (hasCameraPermission()) {
             startCamera()

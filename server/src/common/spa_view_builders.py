@@ -450,6 +450,7 @@ def build_settings_context():
     return {
         'template': 'settings.html',
         'pairing_qr_data_uri': pairing['pairing_qr_data_uri'],
+        'pairing_payload': pairing['pairing_payload'],
         'nintendo_account': get_nintendo_account_summary(),
         'xbox_account': get_xbox_account_summary(),
     }

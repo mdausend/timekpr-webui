@@ -55,6 +55,21 @@
                     android:background="@drawable/wizard_scan_overlay" />
             </FrameLayout>
         </com.google.android.material.card.MaterialCardView>
+        <EditText
+            android:id="@+id/manualPairingPayload"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:hint="@string/wizard_manual_pairing_hint"
+            android:importantForAutofill="no"
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:minLines="3" />
 
+        <Button
+            android:id="@+id/manualPairingSubmit"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/wizard_manual_pairing_submit" />
     </LinearLayout>
 </ScrollView>
