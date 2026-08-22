@@ -555,6 +555,20 @@
                                     <p class="mb-2">{{ t('shell.android_qr_lead') }}</p>
                                     <img id="android-qr-img" src="" alt="{{ t('shell.android_qr_alt') }}"
                                         class="img-fluid border rounded p-2 bg-white mb-2" style="max-height: 200px;">
+                                    <div class="mx-auto my-3 text-start" style="max-width: 36rem;">
+                                        <label for="android-pairing-payload" class="form-label fw-bold small text-muted">
+                                            Pairing payload
+                                        </label>
+                                        <textarea
+                                            id="android-pairing-payload"
+                                            class="form-control font-monospace small"
+                                            rows="4"
+                                            readonly
+                                        ></textarea>
+                                        <div class="form-text">
+                                            Copy this payload for devices where QR scanning is unavailable.
+                                        </div>
+                                    </div>
                                     <div class="small"><code id="android-ws-url"></code></div>
                                 </div>
                                 <div class="tab-pane fade text-center" id="mdm-pane" role="tabpanel"
@@ -1220,6 +1234,11 @@
                     if (data.success) {
                         wizardState.wsUrl = data.payload.server_url;
                         wizardState.pairingPayload = JSON.stringify(data.payload);
+
+                        const pairingPayloadEl = document.getElementById('android-pairing-payload');
+                        if (pairingPayloadEl) {
+                            pairingPayloadEl.value = wizardState.pairingPayload;
+                        }
 
                         // Setup step 2 instructions based on platform
                         document.getElementById('setup-instruction-linux').classList.add('d-none');
