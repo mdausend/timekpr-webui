@@ -1,16 +1,124 @@
-name: Publish Test Server Image
+name: Publish Guardian Snapshot
 
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Components to build
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - all
+          - android
+          - server
+
+  push:
+    branches:
+      - build/arm64-server-image
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
+  changes:
+    name: Detect affected components
+    runs-on: ubuntu-latest
+
+    outputs:
+      android: ${{ steps.result.outputs.android }}
+      server: ${{ steps.result.outputs.server }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+      snapshot_tag: ${{ steps.meta.outputs.snapshot_tag }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            android:
+              - 'android-agent/**'
+              - 'agent/**'
+              - 'i18n/**/agent.yaml'
+              - 'scripts/i18n/**'
+              - 'scripts/android-signature-checksum.sh'
+              - '.github/workflows/server-image-test-publish.yml'
+
+            server:
+              - 'server/**'
+              - 'extension/**'
+              - 'i18n/**/server.yaml'
+              - 'i18n/**/extension.yaml'
+              - 'scripts/i18n/**'
+              - 'scripts/package-extension.py'
+              - '.github/workflows/server-image-test-publish.yml'
+
+      - name: Resolve build scope
+        id: result
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_SCOPE: ${{ inputs.scope }}
+          ANDROID_CHANGED: ${{ steps.filter.outputs.android }}
+          SERVER_CHANGED: ${{ steps.filter.outputs.server }}
+        run: |
+          set -euo pipefail
+
+          android="${ANDROID_CHANGED}"
+          server="${SERVER_CHANGED}"
+
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            case "${REQUESTED_SCOPE:-auto}" in
+              all)
+                android=true
+                server=true
+                ;;
+              android)
+                android=true
+                server=false
+                ;;
+              server)
+                android=false
+                server=true
+                ;;
+              auto)
+                android=true
+                server=true
+                ;;
+              *)
+                echo "Unknown build scope: ${REQUESTED_SCOPE}" >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          echo "android=${android}" >> "$GITHUB_OUTPUT"
+          echo "server=${server}" >> "$GITHUB_OUTPUT"
+
+          echo "Android affected: ${android}"
+          echo "Server affected:  ${server}"
+
+      - name: Prepare snapshot metadata
+        id: meta
+        run: |
+          set -euo pipefail
+
+          short_sha="${GITHUB_SHA::7}"
+
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "snapshot_tag=snapshot-${short_sha}" >> "$GITHUB_OUTPUT"
 
   android-agent:
-    name: Test and build Android agent
+    name: Android universal snapshot
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -41,7 +149,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -60,15 +168,20 @@ jobs:
         working-directory: agent
         run: |
           cargo ndk --target aarch64-linux-android build --lib
+          cargo ndk --target armv7-linux-androideabi build --lib
           cargo ndk --target x86_64-linux-android build --lib
 
       - name: Copy native libraries to Android project
         run: |
           mkdir -p android-agent/app/src/main/jniLibs/arm64-v8a
+          mkdir -p android-agent/app/src/main/jniLibs/armeabi-v7a
           mkdir -p android-agent/app/src/main/jniLibs/x86_64
 
           cp agent/target/aarch64-linux-android/debug/libguardian_agent.so \
             android-agent/app/src/main/jniLibs/arm64-v8a/
+
+          cp agent/target/armv7-linux-androideabi/debug/libguardian_agent.so \
+            android-agent/app/src/main/jniLibs/armeabi-v7a/
 
           cp agent/target/x86_64-linux-android/debug/libguardian_agent.so \
             android-agent/app/src/main/jniLibs/x86_64/
@@ -90,37 +203,73 @@ jobs:
         working-directory: android-agent
         run: ./gradlew assembleDebug --no-daemon
 
-      - name: Verify APK signature checksum
+      - name: Package Android snapshot
+        env:
+          SHORT_SHA: ${{ needs.changes.outputs.short_sha }}
         run: |
-          chmod +x scripts/android-signature-checksum.sh
-          apk="$(find android-agent/app/build/outputs/apk/debug \
-            -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          set -euo pipefail
 
-          if [[ -z "$apk" ]]; then
+          mkdir -p dist
+
+          apk="$(
+            find android-agent/app/build/outputs/apk/debug \
+              -maxdepth 1 \
+              -type f \
+              -name '*.apk' \
+              | head -n 1
+          )"
+
+          if [[ -z "${apk}" ]]; then
             echo "Debug APK not found after assembleDebug." >&2
             exit 1
           fi
 
-          checksum="$(./scripts/android-signature-checksum.sh "$apk")"
+          output="dist/guardian-android-agent-snapshot-${SHORT_SHA}-universal.apk"
 
-          if [[ "$checksum" == "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU" ]]; then
+          cp "${apk}" "${output}"
+
+          chmod +x scripts/android-signature-checksum.sh
+
+          checksum="$(
+            ./scripts/android-signature-checksum.sh "${output}"
+          )"
+
+          if [[ "${checksum}" == "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU" ]]; then
             echo "Checksum script returned empty digest; apksigner/build-tools may be missing." >&2
             exit 1
           fi
 
-          echo "APK signature checksum: $checksum"
+          printf '%s\n' "${checksum}" \
+            > "dist/guardian-android-agent-snapshot-${SHORT_SHA}.signature-checksum"
 
-      - name: Upload Android debug APK
+          echo "APK:"
+          echo "  ${output}"
+
+          echo "Signature checksum:"
+          echo "  ${checksum}"
+
+      - name: Upload Android snapshot artifact
         uses: actions/upload-artifact@v4
         with:
-          name: timekpr-android-agent-snapshot
-          path: android-agent/app/build/outputs/apk/debug/*.apk
+          name: guardian-android-snapshot-${{ github.sha }}
+          path: dist/*
           if-no-files-found: error
 
-  build-and-publish:
-    needs: android-agent
+  server-image:
+    name: Server ${{ matrix.arch }}
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
     runs-on: ubuntu-latest
-    
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -150,13 +299,19 @@ jobs:
 
           if [[ -n "${EXTENSION_SIGNING_KEY_PEM}" ]]; then
             mkdir -p server/static/extensions
-            printf '%s' "${EXTENSION_SIGNING_KEY_PEM}" > server/static/extensions/key.pem
+
+            printf '%s' "${EXTENSION_SIGNING_KEY_PEM}" \
+              > server/static/extensions/key.pem
+
             python -m pip install --disable-pip-version-check crx3 cryptography
+
             python3 scripts/package-extension.py \
               --version "0.0.0" \
               --require-existing-key
+
           elif [[ -f server/static/extensions/youtube_monitor.crx ]]; then
             echo "EXTENSION_SIGNING_KEY_PEM not configured; using committed CRX artifact."
+
           else
             echo "No extension signing key and no committed CRX artifact available." >&2
             exit 1
@@ -169,17 +324,198 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish multi-arch test image
+      - name: Build and publish platform snapshot
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./server/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            ghcr.io/mdausend/timekpr-webui-server:runtipi-test
-            ghcr.io/mdausend/timekpr-webui-server:runtipi-${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/timekpr-webui-server:snapshot-${{ github.sha }}-${{ matrix.arch }}
+            ghcr.io/${{ github.repository_owner }}/timekpr-webui-server:runtipi-test-${{ matrix.arch }}
           build-args: |
-            SERVER_VERSION=runtipi-${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            SERVER_VERSION=snapshot-${{ needs.changes.outputs.short_sha }}
+          cache-from: type=gha,scope=server-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=server-${{ matrix.arch }}
+
+  server-manifest:
+    name: Publish multi-arch server manifests
+    needs:
+      - changes
+      - server-image
+
+    if: |
+      always() &&
+      needs.changes.outputs.server == 'true' &&
+      needs.server-image.result == 'success'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish immutable multi-arch snapshot
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/timekpr-webui-server
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create \
+            --tag "${IMAGE}:snapshot-${SHA}" \
+            "${IMAGE}:snapshot-${SHA}-amd64" \
+            "${IMAGE}:snapshot-${SHA}-arm64"
+
+      - name: Publish moving Runtipi test manifest
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/timekpr-webui-server
+        run: |
+          set -euo pipefail
+
+          docker buildx imagetools create \
+            --tag "${IMAGE}:runtipi-test" \
+            "${IMAGE}:runtipi-test-amd64" \
+            "${IMAGE}:runtipi-test-arm64"
+
+      - name: Inspect published manifests
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/timekpr-webui-server
+          SHA: ${{ github.sha }}
+        run: |
+          echo "Immutable snapshot:"
+          docker buildx imagetools inspect \
+            "${IMAGE}:snapshot-${SHA}"
+
+          echo
+          echo "Moving Runtipi test tag:"
+          docker buildx imagetools inspect \
+            "${IMAGE}:runtipi-test"
+
+  publish-snapshot:
+    name: Publish GitHub snapshot
+    needs:
+      - changes
+      - android-agent
+      - server-manifest
+
+    if: |
+      always() &&
+      (
+        needs.android-agent.result == 'success' ||
+        needs.server-manifest.result == 'success'
+      )
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Android snapshot
+        if: needs.android-agent.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: guardian-android-snapshot-${{ github.sha }}
+          path: dist
+
+      - name: Create snapshot manifest
+        env:
+          SHORT_SHA: ${{ needs.changes.outputs.short_sha }}
+          ANDROID_RESULT: ${{ needs.android-agent.result }}
+          SERVER_RESULT: ${{ needs.server-manifest.result }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/timekpr-webui-server
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          cat > dist/SNAPSHOT.txt <<EOF
+          Guardian development snapshot
+
+          Repository:
+            ${{ github.repository }}
+
+          Commit:
+            ${{ github.sha }}
+
+          Snapshot:
+            snapshot-${SHORT_SHA}
+
+          Android build:
+            ${ANDROID_RESULT}
+
+          Android artifact:
+            guardian-android-agent-snapshot-${SHORT_SHA}-universal.apk
+            (present only when Android build status is success)
+
+          Android ABIs:
+            arm64-v8a
+            armeabi-v7a
+            x86_64
+
+          Server build:
+            ${SERVER_RESULT}
+
+          Immutable server image:
+            ${IMAGE}:snapshot-${{ github.sha }}
+
+          Server platforms:
+            linux/amd64
+            linux/arm64
+
+          Architecture-specific server images:
+            ${IMAGE}:snapshot-${{ github.sha }}-amd64
+            ${IMAGE}:snapshot-${{ github.sha }}-arm64
+
+          Moving Runtipi test image:
+            ${IMAGE}:runtipi-test
+
+          Moving architecture-specific Runtipi images:
+            ${IMAGE}:runtipi-test-amd64
+            ${IMAGE}:runtipi-test-arm64
+
+          IMPORTANT:
+            This is a development snapshot from a fork.
+            It is not an official pantherale0/timekpr-webui release.
+            Debug Android snapshots are intended for disposable test devices
+            and are not suitable as a stable production update channel.
+          EOF
+
+      - name: Publish GitHub pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.changes.outputs.snapshot_tag }}
+          target_commitish: ${{ github.sha }}
+          name: Guardian Snapshot ${{ needs.changes.outputs.short_sha }}
+          prerelease: true
+          generate_release_notes: false
+          body: |
+            Development snapshot from `${{ github.repository }}`.
+
+            **Commit**
+            `${{ github.sha }}`
+
+            **Android**
+            `${{ needs.android-agent.result }}`
+
+            **Server**
+            `${{ needs.server-manifest.result }}`
+
+            **Docker multi-arch snapshot**
+            `ghcr.io/${{ github.repository_owner }}/timekpr-webui-server:snapshot-${{ github.sha }}`
+
+            **Runtipi moving test tag**
+            `ghcr.io/${{ github.repository_owner }}/timekpr-webui-server:runtipi-test`
+
+            This is a fork development snapshot and **not an official Guardian release**.
+          files: |
+            dist/*
