@@ -176,8 +176,10 @@ jobs:
           file: ./server/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/mdausend/timekpr-webui-server:runtipi-test
+          tags: |
+            ghcr.io/mdausend/timekpr-webui-server:runtipi-test
+            ghcr.io/mdausend/timekpr-webui-server:runtipi-${{ github.sha }}
           build-args: |
-            SERVER_VERSION=runtipi-test
+            SERVER_VERSION=runtipi-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
