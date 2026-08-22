@@ -1090,8 +1090,11 @@
             // Highlight card
             document.querySelectorAll('.platform-card').forEach(c => c.classList.remove('selected'));
 
+            const hhSelect = document.getElementById('wizard-household-select');
+            const hhId = hhSelect ? hhSelect.value : '';
+
             // Load Pairing Details via AJAX
-            fetch('/api/pairing/config')
+            fetch(`/api/pairing/config?pairing_household_id=${hhId}`)
                 .then(r => r.json())
                 .then(data => {
                     if (data.success) {
@@ -1117,17 +1120,19 @@
                                 `wget -qO- ${window.location.origin}/scripts/install-agent.sh | sudo bash -s -- --url "${wizardState.wsUrl}"`;
                         } else if (platform === 'android') {
                             document.getElementById('setup-instruction-android').classList.remove('d-none');
-                            document.getElementById('android-qr-img').src = '/api/pairing/qr.png';
+                            document.getElementById('android-qr-img').src =
+                                `/api/pairing/qr.png?pairing_household_id=${hhId}`;
                             document.getElementById('android-ws-url').textContent = wizardState.wsUrl;
 
                             // Load MDM Provisioning details
-                            fetch('/api/pairing/provisioning/config')
+                            fetch(`/api/pairing/provisioning/config?pairing_household_id=${hhId}`)
                                 .then(r => r.json())
                                 .then(pData => {
                                     const mdrQr = document.getElementById('android-mdm-qr-img');
                                     const mdmAlert = document.getElementById('mdm-unavailable-alert');
                                     if (pData.success && pData.provisioning_ready) {
-                                        mdrQr.src = '/api/pairing/provisioning/qr.png';
+                                        mdrQr.src =
+                                            `/api/pairing/provisioning/qr.png?pairing_household_id=${hhId}`;
                                         mdrQr.classList.remove('d-none');
                                         mdmAlert.classList.add('d-none');
                                     } else {
