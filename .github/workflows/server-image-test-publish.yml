@@ -16,7 +16,7 @@ on:
 
   push:
     branches:
-      - build/arm64-server-image
+      - dev
 
 permissions:
   contents: write
@@ -271,10 +271,8 @@ jobs:
             platform: linux/arm64
 
     steps:
-      - name: Check out ARM64 test branch
+      - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          ref: build/arm64-server-image
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
