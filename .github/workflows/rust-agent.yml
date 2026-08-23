@@ -183,20 +183,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: cargo binstall -y --force cargo-ndk
 
-      - name: Build Android Rust targets
-        run: |
-          cargo ndk --target aarch64-linux-android build --lib
-        working-directory: agent
-
-      - name: Copy native libraries to Android project
-        run: |
-          mkdir -p android-agent/app/src/main/jniLibs/arm64-v8a
-          cp agent/target/aarch64-linux-android/debug/libguardian_agent.so android-agent/app/src/main/jniLibs/arm64-v8a/
-
-      - name: Generate UniFFI Kotlin bindings
-        run: |
-          cargo run --features=uniffi/cli --bin uniffi-bindgen generate --language kotlin --library --no-format --out-dir ../android-agent/app/src/main/java/ target/aarch64-linux-android/debug/libguardian_agent.so
-        working-directory: agent
+      - name: Build Android native library and bindings
+        run: ./scripts/android-native-build.sh
 
       - name: Build debug APK
         working-directory: android-agent
