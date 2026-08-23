@@ -15,6 +15,8 @@ The design prioritizes **security, maintainability, and long-term human support*
 
 ### 🛠️ Toolchain & Development Environment
 
+The repository provides a portable devcontainer and `scripts/setup-dev.sh` for local setup. Development tool versions are centralized in `scripts/dev-versions.env`; verify an environment with `scripts/verify-dev-environment.sh`.
+
 **Server (Python)**
 - Python 3.12+ for development.
 - Production: Python 3.12/3.13 base in minimal OCI images.
@@ -159,14 +161,13 @@ Credits are modest, capped annually, and non-cash. All verified incidents become
 - End-to-end: Minimal, focused on critical paths (pairing, policy sync, enforcement).
 
 Local test commands:
+
 ```bash
 # Server
-cd server && python -m pytest
+cd server && TESTING=True ./.venv/bin/python -m pytest -q -n auto
 
 # Agent
-cd agent && cargo check && cargo test
-```
-
+cargo check --manifest-path agent/Cargo.toml
 ---
 
 ### 📂 Code Organization (Flat & Obvious)

@@ -1,0 +1,30 @@
+{
+    "name": "Guardian Development",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+    },
+    "mounts": [
+        {
+            "source": "${localEnv:DEVCONTAINER_DOCKER_SOCKET}",
+            "target": "/var/run/docker-host.sock",
+            "type": "bind"
+        }
+    ],
+    "remoteEnv": {
+        "CONTAINER_HOST": "unix:///var/run/docker-host.sock"
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "ms-python.python",
+                "redhat.java"
+            ]
+        }
+    },
+    "remoteUser": "vscode"
+}
