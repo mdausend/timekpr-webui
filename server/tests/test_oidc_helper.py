@@ -236,6 +236,10 @@ def test_refresh_access_token_http_errors(mock_post):
     # Test definitive HTTP 400 error (e.g. invalid grant/revoked token)
     mock_response_400 = MagicMock()
     mock_response_400.status_code = 400
+    mock_response_400.json.return_value = {
+        'error': 'invalid_grant',
+        'error_description': 'Refresh token has expired',
+    }
     http_error_400 = requests.HTTPError("Bad Request", response=mock_response_400)
     mock_post.side_effect = http_error_400
 
@@ -243,6 +247,8 @@ def test_refresh_access_token_http_errors(mock_post):
         helper.refresh_access_token("revoked-token")
     assert not exc_info.value.is_transient
     assert exc_info.value.status_code == 400
+    assert exc_info.value.oauth_error == 'invalid_grant'
+    assert exc_info.value.is_expected_auth_failure
 
     # Test transient HTTP 503 error
     mock_response_503 = MagicMock()
@@ -298,4 +304,78 @@ def test_refresh_access_token_retries_transient_http_error(mock_post, _mock_slee
     tokens = helper.refresh_access_token("any-token")
     assert tokens['access_token'] == 'new-token'
     assert mock_post.call_count == 2
+
+
+@patch('requests.post')
+def test_refresh_access_token_coalesces_concurrent_requests(mock_post):
+    import threading
+
+    helper = OIDCHelper()
+    helper.issuer_url = "https://auth.com"
+    helper._endpoints = {'token_endpoint': 'https://auth.com/token'}
+    helper.client_id = "test-client"
+    helper.client_secret = "test-secret"
+
+    release_refresh = threading.Event()
+    proceed_refresh = threading.Event()
+
+    def _delayed_refresh(*args, **kwargs):
+        release_refresh.set()
+        proceed_refresh.wait(timeout=1)
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            'access_token': 'new-access-token',
+            'refresh_token': 'new-refresh-token',
+            'expires_in': 1800,
+        }
+        return response
+
+    mock_post.side_effect = _delayed_refresh
+    results = []
+    errors = []
+
+    def _refresh():
+        try:
+            results.append(helper.refresh_access_token("shared-refresh-token"))
+        except Exception as exc:  # pragma: no cover - test helper
+            errors.append(exc)
+
+    first = threading.Thread(target=_refresh)
+    second = threading.Thread(target=_refresh)
+    first.start()
+    assert release_refresh.wait(timeout=1)
+    second.start()
+    proceed_refresh.set()
+    first.join(timeout=1)
+    second.join(timeout=1)
+
+    assert not errors
+    assert len(results) == 2
+    assert results[0]['access_token'] == 'new-access-token'
+    assert results[1]['access_token'] == 'new-access-token'
+    assert mock_post.call_count == 1
+
+
+@patch('requests.post')
+def test_refresh_access_token_logs_expected_invalid_grant_at_info(mock_post, caplog):
+    import logging
+
+    helper = OIDCHelper()
+    helper.issuer_url = "https://auth.com"
+    helper._endpoints = {'token_endpoint': 'https://auth.com/token'}
+    helper.client_id = "test-client"
+    helper.client_secret = "test-secret"
+
+    mock_response_400 = MagicMock()
+    mock_response_400.status_code = 400
+    mock_response_400.json.return_value = {'error': 'invalid_grant'}
+    mock_post.side_effect = requests.HTTPError("Bad Request", response=mock_response_400)
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(Exception):
+            helper.refresh_access_token("revoked-token")
+
+    assert "OIDC token refresh rejected by provider" in caplog.text
+    assert "HTTP error during OIDC token refresh" not in caplog.text
 
