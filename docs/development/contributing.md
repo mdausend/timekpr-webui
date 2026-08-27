@@ -14,28 +14,28 @@ Guide for developers working on the Guardian (timekpr-webui) repository.
 
 ## Essential commands
 
+Set up the development environment as described in [Local development](local-dev.md).
+
 ```bash
-# Server (Docker)
-docker-compose up -d --build
+# Verify development toolchain
+./scripts/verify-dev-environment.sh
 
-# Server (manual)
-cd server && pip install -r requirements.txt
-python app.py              # terminal 1
-python task_worker.py      # terminal 2
-
-# Tests
-cd server && pytest
+# Server tests
+source .env
+cd server
+TESTING=True ./.venv/bin/python -m pytest -q -n auto
 
 # Rust agent
 cargo check --manifest-path agent/Cargo.toml
-cargo build --release --manifest-path agent/Cargo.toml
 
-# Android
-cd android-agent && ./gradlew assembleDebug
+# Android native library and bindings
+./scripts/android-native-build.sh
+
+# Android APK
+cd android-agent && ./gradlew assembleDebug --no-daemon
 
 # Docs
-pip install -r requirements-docs.txt
-mkdocs serve
+.venv-docs/bin/mkdocs build --strict
 ```
 
 ## Architecture conventions
@@ -55,7 +55,12 @@ mkdocs serve
 
 ## Testing
 
-Pytest fixtures in `server/tests/conftest.py`. WebSocket tests use in-memory stubs. Run full suite before PRs.
+Pytest fixtures live in `server/tests/conftest.py`; WebSocket tests use in-memory stubs. Run the full server suite before PRs using the project virtual environment:
+
+```bash
+cd server
+TESTING=True ./.venv/bin/python -m pytest -q -n auto
+```
 
 ## Documentation
 
