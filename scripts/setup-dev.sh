@@ -2,14 +2,22 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+DEV_VERSIONS_FILE="${REPO_ROOT}/scripts/dev-versions.env"
+[[ -f "$DEV_VERSIONS_FILE" ]] || {
+    echo "ERROR: Development versions file not found: ${DEV_VERSIONS_FILE}" >&2
+    exit 1
+}
+
+# shellcheck disable=SC1090
+source "$DEV_VERSIONS_FILE"
+
 SERVER_DIR="${REPO_ROOT}/server"
 AGENT_DIR="${REPO_ROOT}/agent"
 ANDROID_DIR="${REPO_ROOT}/android-agent"
-VENV_DIR="${SERVER_DIR}/venv"
+VENV_DIR="${SERVER_DIR}/.venv"
 ENV_FILE="${REPO_ROOT}/.env"
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-${REPO_ROOT}/.dev/android-sdk}}"
-MIN_RUST_VERSION="1.85.0"
-GRADLE_VERSION="8.9"
 
 SKIP_SYSTEM=0
 SKIP_SERVER=0
@@ -38,17 +46,17 @@ Options:
   --help              Show this help message
 
 What this script configures:
-  - server/venv with pip requirements from server/requirements.txt
+  - server/.venv with pip requirements from server/requirements-dev.txt
   - .env with dev defaults and a generated AGENT_TOKEN
   - agent/config.json for local Rust agent pairing (from config.json.example)
-  - .dev/android-sdk with platform-tools, Android 35 platform, and build-tools
+  - .dev/android-sdk with platform-tools, Android platform, build-tools, and NDK
   - android-agent/local.properties pointing at the local SDK
   - android-agent/app/google-services.json from the example when missing
 
 After setup, typical workflow:
-  1. Terminal 1:  source .env && cd server && ./venv/bin/python app.py
-  2. Terminal 2:  source .env && cd server && ./venv/bin/python task_worker.py
-  3. Linux agent: cd agent && ../server/venv/bin/python -c "import json; ..."  # or run target/debug/timekpr-agent
+  1. Terminal 1:  source .env && cd server && ./.venv/bin/python app.py
+  2. Terminal 2:  source .env && cd server && ./.venv/bin/python task_worker.py
+  3. Linux agent: cd agent && ../server/.venv/bin/python -c "import json; ..."  # or run target/debug/timekpr-agent
   4. Android:     adb install -r android-agent/app/build/outputs/apk/debug/app-debug.apk
 
 Default admin login: admin / admin
@@ -210,9 +218,14 @@ setup_server_venv() {
         python3 -m venv "$VENV_DIR"
     fi
 
-    log "Installing server Python dependencies"
+    if ! "${VENV_DIR}/bin/python" -m pip --version >/dev/null 2>&1; then
+        log "Bootstrapping pip in Python virtualenv"
+        "${VENV_DIR}/bin/python" -m ensurepip --upgrade
+    fi
+
+    log "Installing server development dependencies"
     "${VENV_DIR}/bin/python" -m pip install --upgrade pip
-    "${VENV_DIR}/bin/pip" install -r "${SERVER_DIR}/requirements.txt"
+    "${VENV_DIR}/bin/python" -m pip install -r "${SERVER_DIR}/requirements-dev.txt"
 }
 
 generate_env_file() {
@@ -414,7 +427,8 @@ install_android_sdk() {
 
         local archive="${REPO_ROOT}/.dev/cmdline-tools.zip"
         mkdir -p "${REPO_ROOT}/.dev"
-        curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
+        curl -fsSL \
+            "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
             -o "$archive"
         rm -rf "${REPO_ROOT}/.dev/cmdline-tools-extract"
         unzip -q "$archive" -d "${REPO_ROOT}/.dev/cmdline-tools-extract"
@@ -433,19 +447,24 @@ install_android_sdk() {
     yes | sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null || true
     set -o pipefail
 
-    log "Installing Android SDK packages (platform-tools, android-35, build-tools 35.0.0)"
+    log "Installing Android SDK packages (platform-tools, android-${ANDROID_API_LEVEL}, build-tools ${ANDROID_BUILD_TOOLS_VERSION}, NDK ${ANDROID_NDK_VERSION})"
     sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
         "platform-tools" \
-        "platforms;android-35" \
-        "build-tools;35.0.0"
+        "platforms;android-${ANDROID_API_LEVEL}" \
+        "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
+        "ndk;${ANDROID_NDK_VERSION}"
 
     for required_path in \
         "${ANDROID_SDK_ROOT}/platform-tools/adb" \
-        "${ANDROID_SDK_ROOT}/platforms/android-35/android.jar" \
-        "${ANDROID_SDK_ROOT}/build-tools/35.0.0/aapt"; do
+        "${ANDROID_SDK_ROOT}/platforms/android-${ANDROID_API_LEVEL}/android.jar" \
+        "${ANDROID_SDK_ROOT}/build-tools/${ANDROID_BUILD_TOOLS_VERSION}/aapt" \
+        "${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"; do
         [[ -e "$required_path" ]] || die "Android SDK install incomplete: missing ${required_path}"
     done
     log "Android SDK packages verified"
+
+    export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/${ANDROID_NDK_VERSION}"
+    export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
 }
 
 write_android_local_properties() {
@@ -466,12 +485,18 @@ ensure_google_services_json() {
     cp "$example" "$target"
 }
 
+# File: scripts/setup-dev.sh
+# Function: build_android_agent()
+
 build_android_agent() {
     configure_java_17
     ensure_gradle_wrapper
 
     log "Bundling Android strings from i18n catalogs"
     python "${REPO_ROOT}/scripts/i18n/manage.py" bundle --target android
+
+    log "Building Android native agent and UniFFI bindings"
+    "${REPO_ROOT}/scripts/android-native-build.sh"
 
     log "Building Android debug APK"
     (
@@ -490,7 +515,13 @@ run_server_tests() {
         source "$ENV_FILE"
         set +a
         export TESTING=True
-        "${VENV_DIR}/bin/python" -m pytest -q
+        if "${VENV_DIR}/bin/python" -c 'import xdist' >/dev/null 2>&1; then
+            log "Running server tests in parallel"
+            "${VENV_DIR}/bin/python" -m pytest -q -n auto
+        else
+            log "pytest-xdist not available; running server tests sequentially"
+            "${VENV_DIR}/bin/python" -m pytest -q
+fi
     )
 }
 
@@ -508,19 +539,17 @@ Python virtualenv:
 Android SDK:
   ${ANDROID_SDK_ROOT}
 
-Android build (use JDK 17):
-  export JAVA_HOME=${JAVA_HOME:-/usr/lib/jvm/java-17-openjdk}
-  export ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}
-  cd ${ANDROID_DIR} && ./gradlew assembleDebug
+Android build:
+  Re-run this setup script without --skip-build to build the Android agent.
 
 Run the server (two terminals):
   source ${ENV_FILE}
-  cd ${SERVER_DIR} && ./venv/bin/python app.py
-  cd ${SERVER_DIR} && ./venv/bin/python task_worker.py
+  cd ${SERVER_DIR} && ./.venv/bin/python app.py
+  cd ${SERVER_DIR} && ./.venv/bin/python task_worker.py
 
 Optional Python debug agent (no TimeKpr D-Bus required):
   source ${ENV_FILE}
-  cd ${SERVER_DIR} && ./venv/bin/python debug_agent.py \\
+  cd ${SERVER_DIR} && ./.venv/bin/python debug_agent.py \\
     --server-url "ws://127.0.0.1:5000/ws" \\
     --agent-version "\${TIMEKPR_SERVER_VERSION}"
 

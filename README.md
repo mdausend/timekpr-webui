@@ -57,9 +57,10 @@ Approve the device under **Admin → Devices**.
 | `docs/` | MkDocs documentation source |
 | `scripts/` | Install and release helpers |
 
+
 ## Contributing
 
-See [Contributing](https://pantherale0.github.io/timekpr-webui/development/contributing/) and [AGENTS.md](AGENTS.md) for developer conventions.
+See [Local development](https://pantherale0.github.io/timekpr-webui/development/local-dev/), [Contributing](https://pantherale0.github.io/timekpr-webui/development/contributing/), and [AGENTS.md](AGENTS.md) for the development environment and contributor conventions.
 
 ## License
 

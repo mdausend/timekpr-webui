@@ -233,8 +233,11 @@ def _resolve_request_locale():
 def _refresh_oidc_tokens():
     """Check if the OIDC access token is about to expire, and refresh it if needed."""
     from flask import session, redirect, url_for, jsonify, request
-    import time
-    from src.common.oidc import OIDCRefreshError
+    from src.auth.session_lifecycle import (
+        OidcRefreshOutcome,
+        clear_oidc_session,
+        refresh_oidc_session_tokens,
+    )
 
     if not oidc_helper.is_enabled:
         return
@@ -243,65 +246,19 @@ def _refresh_oidc_tokens():
     if request.path.startswith('/static/') or request.path == '/sw.js' or request.path == '/logout':
         return
 
-    # If the user is logged in via OIDC and has a refresh token
-    if session.get('logged_in') and session.get('oidc_refresh_token'):
-        expires_at = session.get('oidc_token_expires_at')
-        refresh_retry_after = session.get('oidc_refresh_retry_after')
-        if refresh_retry_after and refresh_retry_after > time.time():
-            return
+    if not session.get('logged_in') or not session.get('oidc_refresh_token'):
+        return
 
-        # Check if token is expired or about to expire in the next 60 seconds
-        if expires_at is None or expires_at < time.time() + 60:
-            try:
-                _LOGGER.info("OIDC access token is expiring soon; initiating refresh flow.")
-                refresh_token = session['oidc_refresh_token']
-                new_tokens = oidc_helper.refresh_access_token(refresh_token)
-                
-                # Update tokens in session
-                session['oidc_access_token'] = new_tokens.get('access_token')
-                if new_tokens.get('refresh_token'):
-                    session['oidc_refresh_token'] = new_tokens.get('refresh_token')
-                session['oidc_token_expires_at'] = time.time() + new_tokens.get('expires_in', 3600)
-                session.pop('oidc_refresh_retry_after', None)
-                _LOGGER.info("Successfully refreshed OIDC access token.")
-            except OIDCRefreshError as exc:
-                if exc.is_transient:
-                    # Graceful degradation: back off refresh attempts to avoid blocking every request.
-                    backoff_seconds = int(os.environ.get('OIDC_REFRESH_BACKOFF_SECONDS', '300'))
-                    session['oidc_refresh_retry_after'] = time.time() + backoff_seconds
-                    _LOGGER.warning(
-                        "OIDC token refresh failed with a transient error: %s. "
-                        "Allowing user to remain authenticated temporarily; "
-                        "next refresh attempt in %s seconds.",
-                        exc,
-                        backoff_seconds,
-                    )
-                else:
-                    # Definitive authentication failure: Log out the user
-                    _LOGGER.error("OIDC token refresh failed with a definitive error. Logging out user: %s", exc)
-                    from src.i18n.catalog import flash_t
-                    flash_t('flash.auth.session_expired', 'warning')
-                    session.pop('oidc_refresh_retry_after', None)
-                    session.pop('logged_in', None)
-                    session.pop('user', None)
-                    session.pop('oidc_access_token', None)
-                    session.pop('oidc_refresh_token', None)
-                    session.pop('oidc_token_expires_at', None)
-                    
-                    # Return 401 for API/AJAX requests, redirect to login for UI requests
-                    if request.path.startswith('/api/') or request.headers.get('X-Guardian-SPA') == 'fragment':
-                        return jsonify({'success': False, 'message': 'Session expired'}), 401
-                    return redirect(url_for('ui_auth.login'))
-            except Exception as exc:
-                # Fallback for unexpected failures: treat as transient to avoid locking out users
-                backoff_seconds = int(os.environ.get('OIDC_REFRESH_BACKOFF_SECONDS', '300'))
-                session['oidc_refresh_retry_after'] = time.time() + backoff_seconds
-                _LOGGER.warning(
-                    "Unexpected error during OIDC token refresh: %s. "
-                    "Treating as transient; next refresh attempt in %s seconds.",
-                    exc,
-                    backoff_seconds,
-                )
+    outcome = refresh_oidc_session_tokens(session, oidc_helper)
+    if outcome == OidcRefreshOutcome.AUTH_FAILURE:
+        _LOGGER.info("OIDC session is no longer valid; logging user out.")
+        from src.i18n.catalog import flash_t
+        flash_t('flash.auth.session_expired', 'warning')
+        clear_oidc_session(session)
+
+        if request.path.startswith('/api/') or request.headers.get('X-Guardian-SPA') == 'fragment':
+            return jsonify({'success': False, 'message': 'Session expired'}), 401
+        return redirect(url_for('ui_auth.login'))
 
 
 # Import and register blueprints

@@ -427,11 +427,18 @@ def _scan_hardcoded_js(path: Path, content: str, findings: list[HardcodedString]
 
 def _iter_files(patterns: tuple[str, ...], roots: tuple[Path, ...]) -> list[Path]:
     files: list[Path] = []
+    skipped_dirs = {'venv', '.venv', '__pycache__'}
+
     for root in roots:
         if not root.is_dir():
             continue
         for pattern in patterns:
-            files.extend(sorted(root.rglob(pattern)))
+            files.extend(
+                path
+                for path in sorted(root.rglob(pattern))
+                if not any(part in skipped_dirs for part in path.parts)
+            )
+
     return files
 
 
