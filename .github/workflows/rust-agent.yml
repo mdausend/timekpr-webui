@@ -149,10 +149,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev pkg-config
 
-      - name: Bundle Android strings from i18n
-        run: |
-          python -m pip install --disable-pip-version-check PyYAML
-          python scripts/i18n/manage.py bundle --target agent
+      - name: Install i18n tooling
+        run: python -m pip install --disable-pip-version-check PyYAML
 
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -168,7 +166,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -183,24 +181,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: cargo binstall -y --force cargo-ndk
 
-      - name: Build Android Rust targets
-        run: |
-          cargo ndk --target aarch64-linux-android build --lib
-        working-directory: agent
-
-      - name: Copy native libraries to Android project
-        run: |
-          mkdir -p android-agent/app/src/main/jniLibs/arm64-v8a
-          cp agent/target/aarch64-linux-android/debug/libguardian_agent.so android-agent/app/src/main/jniLibs/arm64-v8a/
-
-      - name: Generate UniFFI Kotlin bindings
-        run: |
-          cargo run --features=uniffi/cli --bin uniffi-bindgen generate --language kotlin --library --no-format --out-dir ../android-agent/app/src/main/java/ target/aarch64-linux-android/debug/libguardian_agent.so
-        working-directory: agent
-
-      - name: Build debug APK
-        working-directory: android-agent
-        run: ./gradlew assembleDebug --no-daemon
+      - name: Build Android agent
+        run: ./scripts/ci.sh android
 
       - name: Verify APK signature checksum script
         run: |
