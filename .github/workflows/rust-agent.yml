@@ -96,10 +96,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev pkg-config
 
-      - name: Bundle agent i18n artifacts
-        run: |
-          python -m pip install --disable-pip-version-check PyYAML
-          python scripts/i18n/manage.py bundle --target agent
+      - name: Install i18n tooling
+        run: python -m pip install --disable-pip-version-check PyYAML
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -109,8 +107,8 @@ jobs:
         with:
           workspaces: "agent -> target"
 
-      - name: Run cargo check
-        run: cargo check --manifest-path agent/Cargo.toml
+      - name: Check Rust agent
+        run: ./scripts/ci.sh rust
 
   windows-check:
     needs: [i18n, changes]
